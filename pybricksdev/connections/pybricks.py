@@ -790,7 +790,7 @@ class PybricksHubUSB(PybricksHub):
 
             if desc_type != 0x10:
                 logger.error("Expected Device Capability descriptor")
-                exit(1)
+                raise RuntimeError("Expected Device Capability descriptor")
 
             # Look for platform descriptors
             if cap_type == 0x05:

@@ -180,3 +180,76 @@ class TestPybricksHub:
             # Verify the expected calls were made
             hub.download_user_program.assert_called_once()
             hub.start_user_program.assert_called_once()
+
+
+class TestPybricksHubUSB:
+    """Tests for the PybricksHubUSB class."""
+
+    @pytest.mark.asyncio
+    @patch("pybricksdev.connections.pybricks.find_descriptor")
+    @patch("pybricksdev.connections.pybricks.get_descriptor")
+    @patch("usb.core.Device")
+    async def test_client_connect_invalid_bos_descriptor(
+        self, mock_usb_device_class, mock_get_descriptor, mock_find_descriptor
+    ):
+        """Test _client_connect with an invalid BOS descriptor."""
+        mock_device_instance = mock_usb_device_class.return_value
+
+        # Mock the two endpoints
+        mock_ep_in = AsyncMock()
+        mock_ep_out = AsyncMock()
+        mock_ep_out.wMaxPacketSize = 64  # Example packet size
+
+        mock_find_descriptor.side_effect = [mock_ep_in, mock_ep_out]
+
+        # Mock get_descriptor calls
+        # First call: get length of BOS descriptor
+        # struct BOSDescriptor {
+        #   uint8_t bLength;
+        #   uint8_t bDescriptorType; // 0x0F
+        #   uint16_t wTotalLength;
+        #   uint8_t bNumDeviceCaps;
+        # }
+        # For this test, we only need wTotalLength to be reasonable.
+        # Let's say the total length is 10 (5 for header + 5 for one capability header)
+        mock_get_descriptor.side_effect = [
+            # First call to get BOS descriptor length (bLength, bDescriptorType, wTotalLength, bNumDeviceCaps)
+            # wTotalLength = 5 (header) + 5 (one cap header) = 10
+            # For the first call, only wTotalLength (at offset 2, size 2) and bLength (offset 0, size 1) are used.
+            # The first byte read is offset, then _, bos_len, _
+            # So, we need to return bytes that parse correctly to (ANY_BYTE, ANY_BYTE, desired_bos_len, ANY_BYTE)
+            # Let's make desired_bos_len = 10.
+            # struct.pack("<BBHB", offset_val, placeholder, bos_len_val, placeholder_num_caps)
+            # The code uses: (ofst, _, bos_len, _) = struct.unpack("<BBHB", bos_descriptor)
+            # So the mock should return bytes that unpack to this.
+            # Let the first descriptor be 5 bytes long (bLength=5)
+            # bDescriptorType = 0x0F (BOS)
+            # wTotalLength = 10
+            # bNumDeviceCaps = 1
+            struct.pack("<BBHB", 5, 0x0F, 10, 1), # Correctly returns total length of 10
+            # Second call: get full BOS descriptor
+            # This will be parsed in a loop.
+            # First iteration: (len, desc_type, cap_type)
+            # We want desc_type to be != 0x10 to trigger the error.
+            # Let len = 5 (size of this descriptor part), desc_type = 0xFE (invalid), cap_type = 0x05 (platform)
+            # The rest of the 10 bytes can be anything, e.g., padding.
+            struct.pack("<BBB", 5, 0xFE, 0x05) + b"\x00\x00\x00\x00\x00", # len=5, desc_type=0xFE (invalid)
+        ]
+
+        hub = PybricksHubUSB(mock_device_instance)
+
+        with pytest.raises(RuntimeError, match="Expected Device Capability descriptor"):
+            await hub._client_connect()
+
+        # Check that device methods were called
+        mock_device_instance.reset.assert_called_once()
+        mock_device_instance.set_configuration.assert_called_once()
+        mock_device_instance.get_active_configuration.assert_called_once()
+
+        # Check that get_descriptor was called twice with correct args
+        assert mock_get_descriptor.call_count == 2
+        mock_get_descriptor.assert_any_call(mock_device_instance, 5, 0x0F, 0) # Get length
+        mock_get_descriptor.assert_any_call(mock_device_instance, 10, 0x0F, 0) # Get full descriptor
+
+        # Check find_descriptor calls
+        assert mock_find_descriptor.call_count == 2
