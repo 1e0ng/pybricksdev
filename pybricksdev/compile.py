@@ -176,6 +176,10 @@ async def compile_multi_file(path: str, abi: Union[int, Tuple[int, int]]):
             except OSError:
                 continue
 
+    if not parts:
+        return b""
+    if len(parts) == 3:
+        return parts[2]
     return b"".join(parts)
 
 
