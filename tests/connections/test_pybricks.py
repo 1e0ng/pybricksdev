@@ -180,3 +180,41 @@ class TestPybricksHub:
             # Verify the expected calls were made
             hub.download_user_program.assert_called_once()
             hub.start_user_program.assert_called_once()
+
+
+class TestPybricksHubUSB:
+    @pytest.mark.asyncio
+    async def test_write_gatt_char_timeout(self):
+        # Instantiate PybricksHubUSB with a mocked USBDevice
+        mock_usb_device = MagicMock()
+        hub = PybricksHubUSB(mock_usb_device)
+
+        # Mock _ep_out
+        hub._ep_out = AsyncMock()
+
+        # Mock _response_queue.get() to simulate a timeout
+        async def slow_response():
+            await asyncio.sleep(5.1) # Sleep longer than the 5s timeout
+            return b"\x00\x00\x00\x00" # Dummy successful response (shouldn't be reached)
+
+        hub._response_queue.get = AsyncMock(side_effect=slow_response)
+
+        # Mock race_disconnect to isolate timeout logic
+        # It needs to be a regular function that returns an awaitable,
+        # or an async function that awaits.
+        async def mock_race_disconnect_impl(coro):
+            return await coro
+
+        # Patch the method on the instance
+        hub.race_disconnect = AsyncMock(side_effect=mock_race_disconnect_impl)
+
+        # Call write_gatt_char and assert RuntimeError is raised
+        with pytest.raises(RuntimeError, match="Timeout: Did not receive response from USB device within 5 seconds."):
+            await hub.write_gatt_char(PYBRICKS_COMMAND_EVENT_UUID, b"test_data", response=True)
+
+        # Ensure _ep_out.write was called
+        hub._ep_out.write.assert_called_once_with(b"\x01test_data") # \x01 is PybricksUsbOutEpMessageType.COMMAND
+        # Ensure _response_queue.get was called
+        hub._response_queue.get.assert_called_once()
+        # Ensure race_disconnect was called
+        hub.race_disconnect.assert_called_once()
